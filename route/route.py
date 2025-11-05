@@ -26,9 +26,9 @@ def signup():
 
     try:
       create_user(name, username, email, password,role)
-      return jsonify({'status':"User created successfully"}),200
+      return jsonify({'status':"User created successfully"}),201
     except ValueError:
-        return jsonify({"error": "Invalid input or empty field(s)"}),500
+        return jsonify({"error": "Invalid input or empty field(s)"}),400
 
 #login route
 @app.route('/login', methods=['POST'])
@@ -58,7 +58,7 @@ def login():
         "username": username,
         "role": role
     })
-    r.setex(f"session:{session_id}", 3600)  # expires in 1 hour
+    r.expire(f"session:{session_id}", 3600)  # expires in 1 hour
 
     return jsonify({
         "message": "Login successful",
@@ -159,24 +159,20 @@ def admin_reply_message(message_id):
     # Create a new message as a reply
     reply_id = str(uuid.uuid4())  # new unique message ID
     receiver_id = original_message["sender_id"]  # send back to user
+    create_message(
+        message_id=reply_id,
+        sender_id=admin_id,
+        receiver_id=receiver_id,
+        subject=reply_subject,
+        content=reply_content,
+        is_read=False
+    )
+    return jsonify({
+        "message": "Reply sent successfully",
+        "reply_id": reply_id
+    }), 201
 
-    try:
-        create_message(
-            message_id=reply_id,
-            sender_id=admin_id,
-            receiver_id=receiver_id,
-            subject=reply_subject,
-            content=reply_content,
-            is_read=False
-        )
 
-        return jsonify({
-            "message": "Reply sent successfully",
-            "reply_id": reply_id
-        }), 201
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
 
 @app.route("/messages/<message_id>/close", methods=["PUT"])
 def close_ticket(message_id):
@@ -256,6 +252,3 @@ def delete_user():
     else:
       delete_user(user_id)
     return jsonify({"message": "User profile deleted successfully"}), 200
-
-if __name__ == '__main__':
-    app.run(debug=True)
