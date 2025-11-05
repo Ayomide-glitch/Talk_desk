@@ -4,7 +4,7 @@ import uuid
 from Utils.hash import verify
 from Utils.OTP import generate_otp,verify_otp,send_otp_mail
 from connections.Redis import r
-from Models.queries import create_user,get_user,get_user_id,update_user
+from Models.queries import create_user,get_user,update_user
 from Models.queries import create_message,admin_check_message,get_user_messages,get_message_by_id,mark_message_as_read
 from dotenv import load_dotenv
 
@@ -23,35 +23,28 @@ def signup():
     email = data.get('email')
     password = data.get('password')
     role = data.get('role')
-    user_id = str(uuid.uuid4())
+
     try:
-      create_user(user_id, name, username, email, password,role)
-      return jsonify({'status':"User created successfully",
-                      'user_id': user_id}),200
-    except Exception as e:
-        return jsonify({"error":str(e)}),500
+      create_user(name, username, email, password,role)
+      return jsonify({'status':"User created successfully"}),200
+    except ValueError:
+        return jsonify({"error": "Invalid input or empty field(s)"}),500
 
 #login route
 @app.route('/login', methods=['POST'])
 def login():
+
     data = request.get_json()
-    user_id = data.get('user_id')
-    name = data.get('name')
+
+    username = data.get('username')
     password = data.get('password')
 
-    # if user_id not provided — try retrieving it using name
-    if not user_id:
-        retrieve_user_id = get_user_id(name)
-        if not retrieve_user_id:
-            return jsonify({"error": "User not found. Please check your name or signup first."}), 404
-        return jsonify({"message": "User ID retrieved successfully", "user_id": retrieve_user_id}), 200
-
-    # If user_id exists — proceed to log
-    user = get_user(user_id)
+    user = get_user(username)
     if not user:
         return jsonify({"error": "User not found"}), 404
 
     # user = (user_id, name, username, email, password, role)
+    user_id= user[0]
     hash_pw = user[4]
     role = user[5]
 
@@ -62,10 +55,10 @@ def login():
     session_id = str(uuid.uuid4())
     r.hset(f"session:{session_id}", mapping={
         "user_id": user_id,
-        "name": name,
+        "username": username,
         "role": role
     })
-    r.expire(f"session:{session_id}", 3600)  # expires in 1 hour
+    r.setex(f"session:{session_id}", 3600)  # expires in 1 hour
 
     return jsonify({
         "message": "Login successful",
@@ -73,30 +66,31 @@ def login():
         "role": role
     }), 200
 
-#generationand sending of otp
+#generation and sending of otp
 @app.route("/generate_otp", methods=["POST"])
 def generate_and_send_otp():
+    session_id = request.headers.get("session_id")
     data = request.get_json()
     email = data.get("email")
-    session_id = data.get("session_id")
-
     if not email or not session_id:
-        return jsonify({"error": "Email and session ID required"}), 400
+       return jsonify({"error": "Email and session ID required"}), 400
 
     otp = generate_otp(email)
     send_otp_mail(email, otp)
-    r.hset(f"session:{session_id}", mapping={"otp": otp}) #also set otp  data into redis
-    r.expire(f"session:{session_id}", 3600)
 
     return jsonify({"message": "OTP sent successfully"}), 200
 
 
 @app.route("/message", methods=["POST"])
 def send_message():
+    session_id = request.headers.get("session_id")
+    if not session_id:
+        return jsonify({"error": "Session ID required"}), 400
+    r.hgetall(f"session:{session_id}")
+
     data = request.get_json()
     email = data.get("email")
     otp = data.get("otp")
-    session_id = data.get("session_id")
     sender_id = data.get("sender_id")
     subject = data.get("subject")
     content = data.get("content")
@@ -106,32 +100,39 @@ def send_message():
     if not verify_otp(email, otp):
         return jsonify({"error": "Invalid or expired OTP"}), 403
 
-    create_message(message_id, sender_id, receiver_id, subject, content, False)
-    r.hdel(f"session:{session_id}", "otp")  # clear OTP
+    create_message(message_id,sender_id, receiver_id, subject, content, False)
 
     return jsonify({"message": "Message sent successfully"}), 201
 
 
 @app.route("/messages", methods=["GET"])
 def get_messages():
-    data = request.get_json()
-    user_id = int(data.get("user_id"))
-    role = data.get("role")
+    session_id = request.headers.get("session_id")
+    if not session_id:
+        return jsonify({"error": "Session ID required or expired"}), 400
+
+    session_data=r.hgetall(f"session:{session_id}")
+    user_id = session_data.get("user_id")
+    role = session_data.get("role")
     try:
       if role is "Admin":
         return admin_check_message()
       elif role is "User":
         return get_user_messages(user_id)
-    except Exception as e:
-      return jsonify({"error": str(e)}), 500
+    except NameError:
+      return jsonify({"error": str("Invalid role or spelling")}), 500
     finally:
       return jsonify({"message": "Message accessed successfully"}), 200
 
 
 @app.route("/messages/<message_id>/reply", methods=["POST"])
 def admin_reply_message(message_id):
+    session_id = request.headers.get("session_id")
+    if not session_id:
+        return jsonify({"error": "Session ID required or expired"}), 400
+
     data = request.get_json()
-    session_id = data.get("session_id")
+
     reply_subject = data.get("subject")
     reply_content = data.get("content")
 
@@ -179,8 +180,7 @@ def admin_reply_message(message_id):
 
 @app.route("/messages/<message_id>/close", methods=["PUT"])
 def close_ticket(message_id):
-    data = request.get_json()
-    session_id = data.get("session_id")
+    session_id = request.headers.get("session_id")
 
     session_data = r.hgetall(f"session:{session_id}")
     if not session_data:
@@ -194,15 +194,14 @@ def close_ticket(message_id):
             cursor.execute("""UPDATE desk_messages SET status = 'closed' WHERE message_id = %s""",(message_id,))
         connection.commit()
         return jsonify({"message": "Message ticket closed successfully"}), 200
-    except Exception as e:
+    except ConnectionError:
         connection.rollback()
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str("Ensure ticket is closed,if not rerun it")}), 500
 
 
 @app.route('/update_user', methods=['PUT'])
 def update_user():
-    data = request.get_json()
-    session_id = data.get("session_id")
+    session_id = request.headers.get("session_id")
 
     # Get session info from Redis
     session_data = r.hgetall(f"session:{session_id}")
@@ -217,6 +216,7 @@ def update_user():
         return jsonify({"error": "Invalid session"}), 401
 
     # Extract the fields to update
+    data=request.get_json()
     name = data.get("name")
     username = data.get("username")
     email = data.get("email")
@@ -236,14 +236,12 @@ def update_user():
         update_user(user_id, name, username, email, hashed_pw, role_update or role)
 
         return jsonify({"message": "User profile updated successfully"}), 200
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except ValueError:
+        return jsonify({"error": str("Reenter new password")}), 500
 
 @app.route('/delete/user', methods=['PUT'])
 def delete_user():
-    data = request.get_json()
-    session_id = data.get("session_id")
+    session_id = request.headers.get("session_id")
 
     # Get session info from Redis
     session_data = r.hgetall(f"session:{session_id}")

@@ -1,14 +1,14 @@
 from connections.postgres import connection
 from Utils.hash import hash_password
 
-def create_user(user_id,name,username,email,password,role='user'): #to register a new user
+def create_user(name,username,email,password,role='user'): #to register a new user
   try:
     with connection.cursor() as cursor:
         hash_pw=hash_password(password)
         cursor.execute("""
         INSERT INTO desk_user(user_id,name,username,
         email,password,role) 
-        VALUES(%s,%s,%s,%s,%s,%s) """, (user_id, name, username,email, hash_pw, role))
+        VALUES(%s,%s,%s,%s,%s) """, ( name, username,email, hash_pw, role))
   except Exception as e:
       connection.rollback()
       print(e)
@@ -21,9 +21,9 @@ def get_user_id(name):
         result = cursor.fetchone()
         return result[0] if result else None
 
-def get_user(user_id): #to fetch a user (for login, dashboard, etc.)
+def get_user(username): #to fetch a user (for login, dashboard, etc.)
     with connection.cursor() as cursor:
-        cursor.execute(""" SELECT * FROM desk_user WHERE user_id = %s""", (user_id, ))
+        cursor.execute(""" SELECT * FROM desk_user WHERE username = %s""", (username, ))
         result = cursor.fetchone()
         return result
 

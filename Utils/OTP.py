@@ -40,3 +40,5 @@ def send_otp_mail(email, otp):
         server.starttls()
         server.login(EMAIL_USER, EMAIL_PASS)
         server.send_message(msg)
+
+print(pyotp.random_base32()[:6])
