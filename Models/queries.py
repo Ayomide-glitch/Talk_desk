@@ -2,18 +2,13 @@ from connections.postgres import connection
 from Utils.hash import hash_password
 
 def create_user(name,username,email,password,role='user'): #to register a new user
-  try:
     with connection.cursor() as cursor:
         hash_pw=hash_password(password)
         cursor.execute("""
-        INSERT INTO desk_user(user_id,name,username,
-        email,password,role) 
-        VALUES(%s,%s,%s,%s,%s) """, ( name, username,email, hash_pw, role))
-  except Exception as e:
-      connection.rollback()
-      print(e)
-  finally:
-      connection.commit()
+      INSERT INTO desk_user(name, username, email, password, role)
+      VALUES (%s, %s, %s, %s, %s)
+      """, (name, username, email, hash_pw, role))
+    connection.commit()
 
 def get_user_id(name):
     with connection.cursor() as cursor:
@@ -27,24 +22,25 @@ def get_user(username): #to fetch a user (for login, dashboard, etc.)
         result = cursor.fetchone()
         return result
 
-def update_user(user_id, name=None, username=None, email=None, password=None, role=None): #to update profile info
-  try:
+def retrieve_user(user_id):
+    with connection.cursor() as cursor:
+        cursor.execute(""" SELECT * FROM desk_user WHERE user_id = %s""", (user_id,))
+        result = cursor.fetchone()
+        return result
+
+def update_user(username,name=None, email=None, password=None, role=None): #to update profile info
+
     with connection.cursor() as cursor:
         cursor.execute("""
             UPDATE desk_user
             SET
                 name = COALESCE(%s, name),
-                username = COALESCE(%s, username),
                 email = COALESCE(%s, email),
                 password = COALESCE(%s, password),
                 role = COALESCE(%s, role)
-            WHERE user_id = %s
-        """, (name, username, email, password, role, user_id))
-  except Exception as e:
-    connection.rollback()
-    print(e)
-  finally:
-   connection.commit()
+            WHERE username = %s
+        """, (name, email, password, role, username))
+    connection.commit()
 
 def get_all_users():
     with connection.cursor() as cursor:

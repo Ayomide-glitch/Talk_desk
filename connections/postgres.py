@@ -11,4 +11,5 @@ connection = pg.connect(
     password=os.getenv("POSTGRES_PASSWORD"),
     database=os.getenv("POSTGRES_DATABASE")
 )
+connection.autocommit=False
 

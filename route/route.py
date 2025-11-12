@@ -1,11 +1,12 @@
 import os
 from flask import Flask, request, jsonify
 import uuid
+from Utils.OTP import generate_otp, verify_otp, send_otp_mail
 from Utils.hash import verify
-from Utils.OTP import generate_otp,verify_otp,send_otp_mail
 from connections.Redis import r
-from Models.queries import create_user,get_user,update_user
+from Models.queries import create_user, get_user, retrieve_user,update_user, delete_user
 from Models.queries import create_message,admin_check_message,get_user_messages,get_message_by_id,mark_message_as_read
+from Utils.mail import send_login_alert,send_close_ticket, message_sent
 from dotenv import load_dotenv
 
 from connections.postgres import connection
@@ -35,7 +36,7 @@ def signup():
 def login():
 
     data = request.get_json()
-
+    ip_address = request.remote_addr
     username = data.get('username')
     password = data.get('password')
 
@@ -45,6 +46,7 @@ def login():
 
     # user = (user_id, name, username, email, password, role)
     user_id= user[0]
+    user_email = user[3]
     hash_pw = user[4]
     role = user[5]
 
@@ -53,12 +55,15 @@ def login():
 
     # Create session in Redis
     session_id = str(uuid.uuid4())
-    r.hset(f"session:{session_id}", mapping={
+    r.hset(username, mapping={
         "user_id": user_id,
-        "username": username,
+        "session_id": session_id,
         "role": role
     })
-    r.expire(f"session:{session_id}", 3600)  # expires in 1 hour
+
+    r.expire(username, 3600)  # expires in 1 hour
+
+    send_login_alert(user_email=user_email, ip_address=ip_address)
 
     return jsonify({
         "message": "Login successful",
@@ -69,12 +74,26 @@ def login():
 #generation and sending of otp
 @app.route("/generate_otp", methods=["POST"])
 def generate_and_send_otp():
-    session_id = request.headers.get("session_id")
-    data = request.get_json()
-    email = data.get("email")
-    if not email or not session_id:
-       return jsonify({"error": "Email and session ID required"}), 400
+    session_id = request.headers.get("Session-Id")
 
+    data = request.get_json()
+
+    username = data.get("username")
+    email = data.get("email")
+
+    if not session_id or not username:
+        return jsonify({"error": "session_id and username required"}), 400
+
+    session_data = r.hgetall(username)
+
+    if not session_data:
+        return jsonify({"error": "Session not found"}), 404
+
+    stored_session_id = session_data.get("session_id")
+    if session_id != stored_session_id:
+        return jsonify({"error": "Invalid or expired session ID"}), 401
+
+    # Generate and send OTP
     otp = generate_otp(email)
     send_otp_mail(email, otp)
 
@@ -83,63 +102,71 @@ def generate_and_send_otp():
 
 @app.route("/message", methods=["POST"])
 def send_message():
-    session_id = request.headers.get("session_id")
-    if not session_id:
-        return jsonify({"error": "Session ID required"}), 400
-    r.hgetall(f"session:{session_id}")
+    session_id = request.headers.get("Session_Id")
 
     data = request.get_json()
+    username = data.get("username")
     email = data.get("email")
     otp = data.get("otp")
     sender_id = data.get("sender_id")
-    subject = data.get("subject")
+    subjects: object = data.get("subject")
     content = data.get("content")
     message_id = str(uuid.uuid4())
     receiver_id = os.getenv("RECEIVER_ID")
 
+    session_data = r.hgetall(username)
+    if session_id != session_data.get("session_id"):
+        return jsonify({"error": "Session ID required or invalid"}), 400
+
+    print(otp)
     if not verify_otp(email, otp):
         return jsonify({"error": "Invalid or expired OTP"}), 403
 
-    create_message(message_id,sender_id, receiver_id, subject, content, False)
-
+    # Create message
+    create_message(message_id, sender_id, receiver_id, subjects, content, False)
+    message_sent(email,subjects,content)
     return jsonify({"message": "Message sent successfully"}), 201
 
 
 @app.route("/messages", methods=["GET"])
 def get_messages():
-    session_id = request.headers.get("session_id")
-    if not session_id:
-        return jsonify({"error": "Session ID required or expired"}), 400
+    session_id = request.headers.get("Session_Id")
+    username = request.args.get("username")  # use query param
 
-    session_data=r.hgetall(f"session:{session_id}")
+    # Validate session
+    session_data = r.hgetall(username)
+    if not session_data:
+        return jsonify({"error": "Session not found"}), 404
+
+    if session_id != session_data.get("session_id"):
+        return jsonify({"error": "Session ID invalid or expired"}), 400
+
     user_id = session_data.get("user_id")
     role = session_data.get("role")
+
     try:
-      if role is "Admin":
-        return admin_check_message()
-      elif role is "User":
-        return get_user_messages(user_id)
-    except NameError:
-      return jsonify({"error": str("Invalid role or spelling")}), 500
-    finally:
-      return jsonify({"message": "Message accessed successfully"}), 200
+        if role == "Admin":
+            return admin_check_message()
+        elif role == "User":
+            return get_user_messages(user_id)
+        else:
+            return jsonify({"error": "Invalid role"}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/messages/<message_id>/reply", methods=["POST"])
 def admin_reply_message(message_id):
-    session_id = request.headers.get("session_id")
-    if not session_id:
-        return jsonify({"error": "Session ID required or expired"}), 400
+    session_id = request.headers.get("Session_Id")
 
     data = request.get_json()
-
+    username = data.get("username")
     reply_subject = data.get("subject")
     reply_content = data.get("content")
 
-    # Get session info from Redis
-    session_data = r.hgetall(f"session:{session_id}")
-    if not session_data:
-        return jsonify({"error": "Session expired or invalid"}), 403
+    session_data= r.hgetall(username)
+    if session_id != session_data:
+        return jsonify({"error": "Session ID invalid or expired"}), 400
 
     role = session_data.get("role")
     admin_id = session_data.get("user_id")
@@ -158,7 +185,9 @@ def admin_reply_message(message_id):
 
     # Create a new message as a reply
     reply_id = str(uuid.uuid4())  # new unique message ID
-    receiver_id = original_message["sender_id"]  # send back to user
+    receiver_id = original_message["sender_id"] # send back to user
+    receiver_user = retrieve_user(receiver_id)
+    receiver_email = receiver_user["email"]
     create_message(
         message_id=reply_id,
         sender_id=admin_id,
@@ -167,6 +196,7 @@ def admin_reply_message(message_id):
         content=reply_content,
         is_read=False
     )
+    message_sent(receiver_email,reply_subject,reply_content)
     return jsonify({
         "message": "Reply sent successfully",
         "reply_id": reply_id
@@ -176,11 +206,20 @@ def admin_reply_message(message_id):
 
 @app.route("/messages/<message_id>/close", methods=["PUT"])
 def close_ticket(message_id):
-    session_id = request.headers.get("session_id")
+    session_id = request.headers.get("Session_Id")
 
-    session_data = r.hgetall(f"session:{session_id}")
-    if not session_data:
-        return jsonify({"error": "Session expired or invalid"}), 403
+    data = request.get_json()
+    username = data.get("username")
+
+    user = get_user(username)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+
+    email = user["email"]
+    session_data = r.hgetall(username)
+    if session_id != session_data.get(session_id):
+        return jsonify({"error": "Session ID expired or invalid"}), 400
+
     role = session_data.get("role")
 
     if role != "Admin":
@@ -189,19 +228,26 @@ def close_ticket(message_id):
         with connection.cursor() as cursor:
             cursor.execute("""UPDATE desk_messages SET status = 'closed' WHERE message_id = %s""",(message_id,))
         connection.commit()
-        return jsonify({"message": "Message ticket closed successfully"}), 200
+
+        if send_close_ticket(email):
+          return jsonify({"message": "Message ticket closed successfully"}), 200
     except ConnectionError:
         connection.rollback()
         return jsonify({"error": str("Ensure ticket is closed,if not rerun it")}), 500
 
 
-@app.route('/update_user', methods=['PUT'])
-def update_user():
-    session_id = request.headers.get("session_id")
+@app.route('/<username>/update_user', methods=['PUT'])
+def updates_user(username):
+    session_id = request.headers.get("Session-Id")
+
+
+    #username place in part parameter
+
 
     # Get session info from Redis
-    session_data = r.hgetall(f"session:{session_id}")
-    if not session_data:
+    session_data =r.hgetall(username)
+    stored_session_id = session_data.get("session_id")
+    if session_id != stored_session_id :
         return jsonify({"error": "Session expired or invalid"}), 403
 
     user_id = session_data.get("user_id")
@@ -229,19 +275,21 @@ def update_user():
         hashed_pw = hash_password(password) if password else None
 
         # Update user info
-        update_user(user_id, name, username, email, hashed_pw, role_update or role)
+        update_user(username,name, email, hashed_pw, role_update or role)
+        print(update_user(username,name, email, hashed_pw))
 
         return jsonify({"message": "User profile updated successfully"}), 200
     except ValueError:
         return jsonify({"error": str("Reenter new password")}), 500
 
-@app.route('/delete/user', methods=['PUT'])
-def delete_user():
-    session_id = request.headers.get("session_id")
-
+@app.route('/delete/username', methods=['DELETE'])
+def delete_users():
+    session_id = request.headers.get("Session_Id")
+    username = request.args.get("username")
     # Get session info from Redis
-    session_data = r.hgetall(f"session:{session_id}")
-    if not session_data:
+    session_data = r.hgetall(username)
+
+    if session_id != session_data.get(session_id):
         return jsonify({"error": "Session expired or invalid"}), 403
 
     user_id = session_data.get("user_id")
@@ -252,3 +300,6 @@ def delete_user():
     else:
       delete_user(user_id)
     return jsonify({"message": "User profile deleted successfully"}), 200
+
+if __name__ == '__main__':
+    app.run(debug=True)
