@@ -1,23 +1,29 @@
 import os
 from flask import Flask, request, jsonify, url_for
 import uuid
-
 from werkzeug.utils import secure_filename, send_from_directory
 
 from Utils.OTP import generate_otp, verify_otp, send_otp_mail
 from Utils.hash import verify
 from connections.Redis import r
-from Models.queries import create_user, get_user, retrieve_user,update_user, delete_user
-from Models.queries import create_message,admin_check_message,get_user_messages,get_message_by_id,mark_message_as_read
-from Utils.mail import send_login_alert,send_close_ticket, message_sent
-from route.upload_route import create_folder, allowed_file, create_user_folder
+from Models.queries import create_user, get_user, retrieve_user, update_user, delete_user
+from Models.queries import create_message, admin_check_message, get_user_messages, get_message_by_id, mark_message_as_read
+from Utils.mail import send_login_alert, send_close_ticket, message_sent
+from route.uploads import create_folder, allowed_file, create_user_folder, init_upload
 from dotenv import load_dotenv
-
 from connections.postgres import connection
 
 load_dotenv()
 
 app = Flask(__name__)
+
+init_upload(app)
+
+# Test the allowed_file function
+test_filenames = ["test.jpg", "document.pdf", "image.png", "file.txt"]
+for test_file in test_filenames:
+    result = allowed_file(test_file)
+    print(f"allowed_file('{test_file}') = {result}")
 
 #signup route
 @app.route('/signup',methods=['POST'])
@@ -107,7 +113,9 @@ def generate_and_send_otp():
 @app.route("/message", methods=["POST"])
 def send_message():
     session_id = request.headers.get("Session_Id")
-    data = request.form  # Use form data because we may include a file
+    data = request.form
+
+    # Get all required fields
     username = data.get("username")
     email = data.get("email")
     otp = data.get("otp")
@@ -117,7 +125,10 @@ def send_message():
     receiver_id = os.getenv("RECEIVER_ID")
     file = request.files.get("file")
 
-    #  Validate session
+    # Validate required fields
+    if not all([username, email, otp, sender_id, subject, content, session_id]):
+        return jsonify({"error": "All fields are required"}), 400
+
     session_data = r.hgetall(username)
     if not session_data:
         return jsonify({"error": "Session not found"}), 404
@@ -126,28 +137,27 @@ def send_message():
     if session_id != stored_session_id:
         return jsonify({"error": "Session ID invalid or expired"}), 400
 
-    #  Verify OTP
+    # Verify OTP
     if not verify_otp(email, otp):
         return jsonify({"error": "Invalid or expired OTP"}), 403
 
-
     create_folder()
-    file_url = None  # Default in case user doesn’t upload file
+    file_url = None
 
     if file and file.filename != "":
-        #  Handle optional file upload
+        # Handle file upload
         if not allowed_file(file.filename):
             return jsonify({"error": "File type not allowed"}), 403
 
-        # Make user-specific folder
+        # Create user-specific folder
         user_folder = create_user_folder(username)
 
-        #save file
+        # Save file
         filename = secure_filename(file.filename)
         file_path = os.path.join(user_folder, filename)
         file.save(file_path)
 
-        #Generate URL for accessing the file
+        # Generate URL for accessing the file
         file_url = url_for('uploaded_file', username=username, filename=filename, _external=True)
 
     # Create new message ID and store in DB
@@ -162,15 +172,14 @@ def send_message():
         is_read=False,
         file_url=file_url
     )
-    message_sent(email=email,subjects=subject,content=content,file_url=file_url)
+    message_sent(email=email, subjects=subject, content=content, file_url=file_url)
+
     return jsonify({
         "message": "Message sent successfully",
         "message_id": message_id,
         "file_url": file_url
     }), 201
 
-
-# noinspection PyArgumentList
 @app.route('/uploads/<username>/<filename>', methods=['GET'])
 def uploaded_file(username, filename):
     user_folder = os.path.join(app.config['UPLOAD_FOLDER'], username)
