@@ -54,10 +54,10 @@ def send_login_alert(user_email, ip_address):
         return True
 
     return False
-def message_sent(email,subjects,content):
+def message_sent(email,subjects,content,file_url):
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     subject= "Message sent"
-    body = f"Details: {subjects}\n\n{content} at {timestamp}"
+    body = f"Details: {subjects}\n\n{content}\n\n{file_url} at {timestamp}"
 
     if send_email(email,subject,body):
         return True

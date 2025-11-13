@@ -107,7 +107,7 @@ def generate_and_send_otp():
 @app.route("/message", methods=["POST"])
 def send_message():
     session_id = request.headers.get("Session_Id")
-    data = request.form  #  use form data because we may include a file
+    data = request.form  # Use form data because we may include a file
     username = data.get("username")
     email = data.get("email")
     otp = data.get("otp")
@@ -117,51 +117,64 @@ def send_message():
     receiver_id = os.getenv("RECEIVER_ID")
     file = request.files.get("file")
 
-
-    #Validate session
+    #  Validate session
     session_data = r.hgetall(username)
+    if not session_data:
+        return jsonify({"error": "Session not found"}), 404
+
     stored_session_id = session_data.get("session_id")
-    if not session_data or session_id != stored_session_id:
+    if session_id != stored_session_id:
         return jsonify({"error": "Session ID invalid or expired"}), 400
 
-    #Verify OTP
+    #  Verify OTP
     if not verify_otp(email, otp):
         return jsonify({"error": "Invalid or expired OTP"}), 403
 
+
     create_folder()
+    file_url = None  # Default in case user doesn’t upload file
+
     if file and file.filename != "":
         #  Handle optional file upload
         if not allowed_file(file.filename):
             return jsonify({"error": "File type not allowed"}), 403
 
         # Make user-specific folder
-        user_folder=create_user_folder(username)
-        # Save file
+        user_folder = create_user_folder(username)
+
+        #save file
         filename = secure_filename(file.filename)
         file_path = os.path.join(user_folder, filename)
         file.save(file_path)
 
-        # Generate URL for accessing the file
+        #Generate URL for accessing the file
         file_url = url_for('uploaded_file', username=username, filename=filename, _external=True)
 
-        # Create new message ID
-        message_id = str(uuid.uuid4())
+    # Create new message ID and store in DB
+    message_id = str(uuid.uuid4())
 
-        if file_url:
-          create_message(message_id=message_id, sender_id=sender_id, receiver_id=receiver_id,subject=subject,content=content,is_read=False, file_url=file_url)
-        return jsonify({
-            "message": "Message sent successfully",
-            "message_id": message_id,
-            "file_url": file_url
-        }), 201
+    create_message(
+        message_id=message_id,
+        sender_id=sender_id,
+        receiver_id=receiver_id,
+        subject=subject,
+        content=content,
+        is_read=False,
+        file_url=file_url
+    )
+    message_sent(email=email,subjects=subject,content=content,file_url=file_url)
+    return jsonify({
+        "message": "Message sent successfully",
+        "message_id": message_id,
+        "file_url": file_url
+    }), 201
 
-    else:
-        return jsonify({"error": "File type not allowed"}), 403
 
+# noinspection PyArgumentList
 @app.route('/uploads/<username>/<filename>', methods=['GET'])
 def uploaded_file(username, filename):
     user_folder = os.path.join(app.config['UPLOAD_FOLDER'], username)
-    return send_from_directory(user_folder,filename)
+    return send_from_directory(user_folder, filename)
 
 @app.route("/messages", methods=["GET"])
 def get_messages():
@@ -231,7 +244,7 @@ def admin_reply_message(message_id):
         content=reply_content,
         is_read=False,
         file_url=None)
-    message_sent(receiver_email,reply_subject,reply_content)
+    message_sent(receiver_email,reply_subject,reply_content,file_url=None)
     return jsonify({
         "message": "Reply sent successfully",
         "reply_id": reply_id
