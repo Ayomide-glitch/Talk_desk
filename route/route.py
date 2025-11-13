@@ -1,12 +1,16 @@
 import os
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, url_for
 import uuid
+
+from werkzeug.utils import secure_filename, send_from_directory
+
 from Utils.OTP import generate_otp, verify_otp, send_otp_mail
 from Utils.hash import verify
 from connections.Redis import r
 from Models.queries import create_user, get_user, retrieve_user,update_user, delete_user
 from Models.queries import create_message,admin_check_message,get_user_messages,get_message_by_id,mark_message_as_read
 from Utils.mail import send_login_alert,send_close_ticket, message_sent
+from route.upload_route import create_folder, allowed_file, create_user_folder
 from dotenv import load_dotenv
 
 from connections.postgres import connection
@@ -103,30 +107,61 @@ def generate_and_send_otp():
 @app.route("/message", methods=["POST"])
 def send_message():
     session_id = request.headers.get("Session_Id")
-
-    data = request.get_json()
+    data = request.form  #  use form data because we may include a file
     username = data.get("username")
     email = data.get("email")
     otp = data.get("otp")
     sender_id = data.get("sender_id")
-    subjects: object = data.get("subject")
+    subject = data.get("subject")
     content = data.get("content")
-    message_id = str(uuid.uuid4())
     receiver_id = os.getenv("RECEIVER_ID")
+    file = request.files.get("file")
 
+
+    #Validate session
     session_data = r.hgetall(username)
-    if session_id != session_data.get("session_id"):
-        return jsonify({"error": "Session ID required or invalid"}), 400
+    stored_session_id = session_data.get("session_id")
+    if not session_data or session_id != stored_session_id:
+        return jsonify({"error": "Session ID invalid or expired"}), 400
 
-    print(otp)
+    #Verify OTP
     if not verify_otp(email, otp):
         return jsonify({"error": "Invalid or expired OTP"}), 403
 
-    # Create message
-    create_message(message_id, sender_id, receiver_id, subjects, content, False)
-    message_sent(email,subjects,content)
-    return jsonify({"message": "Message sent successfully"}), 201
+    create_folder()
+    if file and file.filename != "":
+        #  Handle optional file upload
+        if not allowed_file(file.filename):
+            return jsonify({"error": "File type not allowed"}), 403
 
+        # Make user-specific folder
+        user_folder=create_user_folder(username)
+        # Save file
+        filename = secure_filename(file.filename)
+        file_path = os.path.join(user_folder, filename)
+        file.save(file_path)
+
+        # Generate URL for accessing the file
+        file_url = url_for('uploaded_file', username=username, filename=filename, _external=True)
+
+        # Create new message ID
+        message_id = str(uuid.uuid4())
+
+        if file_url:
+          create_message(message_id=message_id, sender_id=sender_id, receiver_id=receiver_id,subject=subject,content=content,is_read=False, file_url=file_url)
+        return jsonify({
+            "message": "Message sent successfully",
+            "message_id": message_id,
+            "file_url": file_url
+        }), 201
+
+    else:
+        return jsonify({"error": "File type not allowed"}), 403
+
+@app.route('/uploads/<username>/<filename>', methods=['GET'])
+def uploaded_file(username, filename):
+    user_folder = os.path.join(app.config['UPLOAD_FOLDER'], username)
+    return send_from_directory(user_folder,filename)
 
 @app.route("/messages", methods=["GET"])
 def get_messages():
@@ -194,8 +229,8 @@ def admin_reply_message(message_id):
         receiver_id=receiver_id,
         subject=reply_subject,
         content=reply_content,
-        is_read=False
-    )
+        is_read=False,
+        file_url=None)
     message_sent(receiver_email,reply_subject,reply_content)
     return jsonify({
         "message": "Reply sent successfully",

@@ -22,18 +22,24 @@ def create_message_table():
           subject VARCHAR(200),
           content TEXT NOT NULL,
           is_read BOOLEAN DEFAULT FALSE,
+          file_url VARCHAR(200) DEFAULT 'None',
+          status VARCHAR(20) DEFAULT 'open',
          created_at TIMESTAMP DEFAULT now()
          )''')
     connection.commit()
 
 def alter():
     with connection.cursor() as cursor:
-        cursor.execute("""ALTER TABLE desk_messages ADD COLUMN status VARCHAR(20) DEFAULT 'open' """)
+        cursor.execute("""ALTER TABLE desk_messages ADD COLUMN  """)
     connection.commit()
+def alter_url():
+    with connection.cursor() as cursor:
+        cursor.execute("""ALTER TABLE desk_user ADD COLUMN """)
 def create_all_tables():
-  create_user_table()
+  # create_user_table()
   create_message_table()
-  alter()
+  # alter()
+  # alter_url()
 print("All tables created")
 print("Table updated")
 

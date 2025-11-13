@@ -57,17 +57,18 @@ def delete_user(user_id):
   finally:
       connection.commit()
 
-def create_message(message_id,sender_id,receiver_id,subject,content,is_read): #to send or save a new message
+def create_message(message_id,sender_id,receiver_id,subject,content,is_read,file_url): #to send or save a new message
  try:
     with connection.cursor() as cursor:
-        cursor.execute("""INSERT INTO desk_messages(message_id,sender_id,receiver_id,subject,content,is_read) 
-                       VALUES(%s,%s,%s,%s,%s,%s)""", (message_id,sender_id,receiver_id,subject,content,is_read)
+        cursor.execute("""INSERT INTO desk_messages(message_id,sender_id,receiver_id,subject,content,is_read,file_url) 
+                       VALUES(%s,%s,%s,%s,%s,%s,%s)""", (message_id,sender_id,receiver_id,subject,content,is_read,file_url)
                        )
  except Exception as e:
      connection.rollback()
      print(e)
  finally:
      connection.commit()
+
 
 def get_user_messages(user_id): #Retrieve all messages for a specific user
     with connection.cursor() as cursor:
